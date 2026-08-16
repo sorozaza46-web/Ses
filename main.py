@@ -153,9 +153,14 @@ class VoiceChangerApp:
                 in_idx = self.cb_in.current()
                 out_idx = self.cb_out.current()
 
+                # Cihazın kanal desteğini dinamik sorgula (Mono/Stereo çakışmasını önler)
+                in_dev_info = sd.query_devices(in_idx, 'input')
+                in_channels = min(1, in_dev_info['max_input_channels'])
+
                 self.stream = sd.Stream(
                     device=(in_idx, out_idx),
-                    channels=2,
+                    channels=in_channels,
+                    samplerate=44100,
                     callback=self.audio_callback
                 )
                 self.stream.start()
