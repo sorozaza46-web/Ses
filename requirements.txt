@@ -1,0 +1,9 @@
+torch
+torchvision
+torchaudio
+numpy
+sounddevice
+scipy
+faiss-cpu
+pyinstaller
+
