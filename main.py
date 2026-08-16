@@ -33,7 +33,7 @@ class SafeRVCInference:
         if not self.is_ready:
             return input_frame
         try:
-            # GPU Bellek sızıntılarını ve gecikmeyi önleyen blok
+            # GPU bellek sızıntılarını ve gecikmeyi önleyen blok
             with torch.no_grad():
                 tensor_data = torch.from_numpy(input_frame).float().to(self.device)
                 processed = torch.tanh(tensor_data)
@@ -64,15 +64,17 @@ class VoiceChangerApp:
     def download_hubert_if_missing(self):
         hubert_path = "hubert_base.pt"
         if not os.path.exists(hubert_path):
-            print("HuBERT bulunamadı. HuggingFace HTTPS üzerinden güvenli indirme başlatılıyor...")
-            url = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt"
+            print("HuBERT bulunamadı. Üyelik istemeyen doğrudan bağlantıdan indirme başlatılıyor...")
+            # Oturum/Hesap gerektirmeyen doğrudan indirme adresi
+            url = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt?download=true"
             try:
-                response = requests.get(url, stream=True, timeout=15)
+                headers = {'User-Agent': 'Mozilla/5.0'}
+                response = requests.get(url, headers=headers, stream=True, timeout=30)
                 with open(hubert_path, "wb") as f:
                     for chunk in response.iter_content(chunk_size=16384):
                         if chunk:
                             f.write(chunk)
-                print("HuBERT hazır.")
+                print("HuBERT sorunsuz indirildi ve hazır.")
             except Exception as e:
                 print(f"HuBERT İndirme Hatası: {e}")
 
@@ -177,4 +179,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = VoiceChangerApp(root)
     root.mainloop()
-        
+    
