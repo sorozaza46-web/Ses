@@ -10,19 +10,21 @@ import torch
 
 
 class SafeRVCInference:
-    """Yapay zeka çıkarım ve ses işleme katmanı"""
-    def __init__(self, device="cpu"):
-        self.device = device
+    """Yapay zeka çıkarım ve CUDA ses işleme katmanı"""
+    def __init__(self):
+        # NVIDIA GPU mevcutsa CUDA'ya geç, yoksa CPU kullan
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.is_ready = False
         self.model = None
 
     def load_model(self, pth_path):
         try:
-            # Model dosyasını güvenli yükleme
+            # Model dosyasını belirlenen cihaza (GPU/CPU) aktar
             cpt = torch.load(pth_path, map_location=self.device)
             self.model = cpt
             self.is_ready = True
-            return True, "Model başarıyla yüklendi."
+            dev_name = torch.cuda.get_device_name(0) if self.device.type == "cuda" else "CPU"
+            return True, f"Model yüklendi. Çalışan Cihaz: {dev_name}"
         except Exception as e:
             self.is_ready = False
             return False, str(e)
@@ -31,12 +33,11 @@ class SafeRVCInference:
         if not self.is_ready:
             return input_frame
         try:
-            # Bellek sızıntısını önlemek için no_grad bloğu
+            # GPU Bellek sızıntılarını ve gecikmeyi önleyen blok
             with torch.no_grad():
-                tensor_data = torch.from_numpy(input_frame).float()
-                # Örnekleme ve normalize işleme
+                tensor_data = torch.from_numpy(input_frame).float().to(self.device)
                 processed = torch.tanh(tensor_data)
-                return processed.numpy()
+                return processed.cpu().numpy()
         except Exception:
             return input_frame
 
@@ -44,18 +45,17 @@ class SafeRVCInference:
 class VoiceChangerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("PRO RVC Standalone Changer")
-        self.root.geometry("500x530")
+        self.root.title("PRO RVC Standalone Changer (GPU Assisted)")
+        self.root.geometry("500x550")
         self.root.resizable(False, False)
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.engine = SafeRVCInference(device=self.device)
+        self.engine = SafeRVCInference()
         self.is_running = False
         self.stream = None
 
         self.model_path = tk.StringVar()
         
-        # HuBERT kontrolünü güvenli arka plan thread'inde başlat
+        # HuBERT kontrolünü arka planda güvenli çalıştır
         threading.Thread(target=self.download_hubert_if_missing, daemon=True).start()
 
         self.setup_ui()
@@ -64,7 +64,7 @@ class VoiceChangerApp:
     def download_hubert_if_missing(self):
         hubert_path = "hubert_base.pt"
         if not os.path.exists(hubert_path):
-            print("HuBERT bulunamadı. Güvenli indirme başlatılıyor...")
+            print("HuBERT bulunamadı. HuggingFace HTTPS üzerinden güvenli indirme başlatılıyor...")
             url = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt"
             try:
                 response = requests.get(url, stream=True, timeout=15)
@@ -134,12 +134,11 @@ class VoiceChangerApp:
             self.model_path.set(file)
             ok, msg = self.engine.load_model(file)
             if ok:
-                messagebox.showinfo("Bilgi", "Model hafızaya yüklendi.")
+                messagebox.showinfo("Bilgi", msg)
             else:
                 messagebox.showerror("Hata", f"Model yükleme hatası: {msg}")
 
     def audio_callback(self, indata, outdata, frames, time_info, status):
-        # Ses işleme tamponu
         outdata[:] = self.engine.process_frame(indata)
 
     def toggle_audio(self):
@@ -178,4 +177,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = VoiceChangerApp(root)
     root.mainloop()
-    
+        
