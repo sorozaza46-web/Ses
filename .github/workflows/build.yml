@@ -1,33 +1,29 @@
-name: Build Light Voice Changer EXE
+name: Build Pro Voice Changer
 
-on:
-  push:
-    branches: [ "main" ]
+on: [push]
 
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: Python Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Bağımlılıkları Yükle
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
 
-    - name: Install PyInstaller
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller
+      - name: EXE Derle
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --hidden-import="torch" --name="ProVoiceChanger" main.py
 
-    - name: Build Single EXE File
-      run: |
-        pyinstaller --noconfirm --onefile --windowed --name="LightVoiceChanger" main.py
-
-    - name: Upload Built EXE
-      uses: actions/upload-artifact@v4
-      with:
-        name: VoiceChanger-Windows-EXE
-        path: dist/LightVoiceChanger.exe
-        
+      - name: Çıktıyı Kaydet
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProVoiceChanger
+          path: dist/ProVoiceChanger.exe
+          
