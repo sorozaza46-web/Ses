@@ -17,7 +17,6 @@ class SafeRVCInference:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.is_ready = False
         self.model = None
-        self.sr = 44100  # Standart sabit örnekleme hızı
 
     def load_model(self, pth_path):
         try:
@@ -57,7 +56,6 @@ class VoiceChangerApp:
         self.audio_queue = queue.Queue(maxsize=20)
 
         self.model_path = tk.StringVar()
-        self.hostapi_devices = []
 
         threading.Thread(target=self.download_hubert_if_missing, daemon=True).start()
 
@@ -83,7 +81,7 @@ class VoiceChangerApp:
     def setup_ui(self):
         tk.Label(self.root, text="RVC Canlı Ses Dönüştürücü", font=('Segoe UI', 12, 'bold')).pack(pady=10)
 
-        frame_dev = tk.LabelFrame(self.root, text=" Ses Cihazları (WASAPI) ", font=('Segoe UI', 9, 'bold'))
+        frame_dev = tk.LabelFrame(self.root, text=" Ses Cihazları ", font=('Segoe UI', 9, 'bold'))
         frame_dev.pack(fill="x", padx=15, pady=5)
 
         tk.Label(frame_dev, text="Giriş (Mikrofon):").pack(anchor="w", padx=5)
@@ -116,16 +114,19 @@ class VoiceChangerApp:
 
     def refresh_devices(self):
         try:
-            # -9993 hatasını önlemek için yalnızca varsayılan Host API (MME veya WASAPI) cihazlarını filtrele
             all_devices = sd.query_devices()
-            default_api = sd.default.hostapi
+            hostapis = sd.query_hostapis()
 
-            self.hostapi_devices = [
-                (idx, d) for idx, d in enumerate(all_devices) if d['hostapi'] == default_api
-            ]
+            in_devs = []
+            out_devs = []
 
-            in_devs = [f"[{idx}] {d['name']}" for idx, d in self.hostapi_devices if d['max_input_channels'] > 0]
-            out_devs = [f"[{idx}] {d['name']}" for idx, d in self.hostapi_devices if d['max_output_channels'] > 0]
+            for idx, d in enumerate(all_devices):
+                api_name = hostapis[d['hostapi']]['name']
+                label = f"[{idx}] ({api_name}) {d['name']}"
+                if d['max_input_channels'] > 0:
+                    in_devs.append(label)
+                if d['max_output_channels'] > 0:
+                    out_devs.append(label)
 
             self.cb_in['values'] = in_devs
             self.cb_out['values'] = out_devs
@@ -146,7 +147,6 @@ class VoiceChangerApp:
                 messagebox.showerror("Hata", f"Model yükleme hatası: {msg}")
 
     def in_callback(self, indata, frames, time, status):
-        """Giriş cihazından sesi alıp işleme kuyruğuna atar"""
         if status:
             print(f"Giriş Durumu: {status}", file=sys.stderr)
         processed = self.engine.process_frame(indata)
@@ -156,12 +156,17 @@ class VoiceChangerApp:
             pass
 
     def out_callback(self, outdata, frames, time, status):
-        """Kuyruktan işlenmiş sesi alıp çıkış cihazına basar"""
         if status:
             print(f"Çıkış Durumu: {status}", file=sys.stderr)
         try:
             data = self.audio_queue.get_nowait()
-            outdata[:] = data
+            if data.shape[1] != outdata.shape[1]:
+                if outdata.shape[1] > data.shape[1]:
+                    outdata[:] = np.repeat(data, outdata.shape[1], axis=1)
+                else:
+                    outdata[:] = data[:, :outdata.shape[1]]
+            else:
+                outdata[:] = data
         except queue.Empty:
             outdata.fill(0)
 
@@ -172,17 +177,21 @@ class VoiceChangerApp:
                 return
 
             try:
-                # String içinden ID çıkar
                 in_idx = int(self.cb_in.get().split(']')[0].replace('[', ''))
                 out_idx = int(self.cb_out.get().split(']')[0].replace('[', ''))
 
-                samplerate = 44100
+                in_info = sd.query_devices(in_idx)
+                out_info = sd.query_devices(out_idx)
+
+                samplerate = int(in_info['default_samplerate'])
                 blocksize = 2048
 
-                # Giriş ve Çıkışı ayrı streamler halinde aç
+                in_channels = min(1, in_info['max_input_channels'])
+                out_channels = min(2, out_info['max_output_channels'])
+
                 self.input_stream = sd.InputStream(
                     device=in_idx,
-                    channels=1,
+                    channels=in_channels,
                     samplerate=samplerate,
                     callback=self.in_callback,
                     blocksize=blocksize
@@ -190,7 +199,7 @@ class VoiceChangerApp:
 
                 self.output_stream = sd.OutputStream(
                     device=out_idx,
-                    channels=1,
+                    channels=out_channels,
                     samplerate=samplerate,
                     callback=self.out_callback,
                     blocksize=blocksize
@@ -212,7 +221,6 @@ class VoiceChangerApp:
                 self.output_stream.stop()
                 self.output_stream.close()
 
-            # Kuyruğu temizle
             while not self.audio_queue.empty():
                 try:
                     self.audio_queue.get_nowait()
@@ -228,4 +236,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = VoiceChangerApp(root)
     root.mainloop()
-    
+                
