@@ -1,8 +1,10 @@
 import os
+import queue
 import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
 import numpy as np
 import requests
 import sounddevice as sd
@@ -10,11 +12,12 @@ import torch
 
 
 class SafeRVCInference:
-    """Yapay zeka çıkarım ve CUDA ses işleme katmanı"""
+    """Yapay zeka çıkarım ve GPU ses işleme katmanı"""
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.is_ready = False
         self.model = None
+        self.sr = 44100  # Standart sabit örnekleme hızı
 
     def load_model(self, pth_path):
         try:
@@ -22,7 +25,7 @@ class SafeRVCInference:
             self.model = cpt
             self.is_ready = True
             dev_name = torch.cuda.get_device_name(0) if self.device.type == "cuda" else "CPU"
-            return True, f"Model yüklendi. Çalışan Cihaz: {dev_name}"
+            return True, f"Model Yüklendi ({dev_name})"
         except Exception as e:
             self.is_ready = False
             return False, str(e)
@@ -43,16 +46,19 @@ class VoiceChangerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("PRO RVC Standalone Changer (GPU Assisted)")
-        self.root.geometry("500x550")
+        self.root.geometry("520x580")
         self.root.resizable(False, False)
 
         self.engine = SafeRVCInference()
         self.is_running = False
+        
         self.input_stream = None
         self.output_stream = None
+        self.audio_queue = queue.Queue(maxsize=20)
 
         self.model_path = tk.StringVar()
-        
+        self.hostapi_devices = []
+
         threading.Thread(target=self.download_hubert_if_missing, daemon=True).start()
 
         self.setup_ui()
@@ -61,7 +67,7 @@ class VoiceChangerApp:
     def download_hubert_if_missing(self):
         hubert_path = "hubert_base.pt"
         if not os.path.exists(hubert_path):
-            print("HuBERT bulunamadı. Üyelik istemeyen doğrudan bağlantıdan indirme başlatılıyor...")
+            print("HuBERT bulunamadı. İndirme başlatılıyor...")
             url = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt?download=true"
             try:
                 headers = {'User-Agent': 'Mozilla/5.0'}
@@ -70,14 +76,14 @@ class VoiceChangerApp:
                     for chunk in response.iter_content(chunk_size=16384):
                         if chunk:
                             f.write(chunk)
-                print("HuBERT sorunsuz indirildi ve hazır.")
+                print("HuBERT hazır.")
             except Exception as e:
                 print(f"HuBERT İndirme Hatası: {e}")
 
     def setup_ui(self):
         tk.Label(self.root, text="RVC Canlı Ses Dönüştürücü", font=('Segoe UI', 12, 'bold')).pack(pady=10)
 
-        frame_dev = tk.LabelFrame(self.root, text=" Ses Cihazları ", font=('Segoe UI', 9, 'bold'))
+        frame_dev = tk.LabelFrame(self.root, text=" Ses Cihazları (WASAPI) ", font=('Segoe UI', 9, 'bold'))
         frame_dev.pack(fill="x", padx=15, pady=5)
 
         tk.Label(frame_dev, text="Giriş (Mikrofon):").pack(anchor="w", padx=5)
@@ -110,9 +116,16 @@ class VoiceChangerApp:
 
     def refresh_devices(self):
         try:
-            devices = sd.query_devices()
-            in_devs = [d['name'] for d in devices if d['max_input_channels'] > 0]
-            out_devs = [d['name'] for d in devices if d['max_output_channels'] > 0]
+            # -9993 hatasını önlemek için yalnızca varsayılan Host API (MME veya WASAPI) cihazlarını filtrele
+            all_devices = sd.query_devices()
+            default_api = sd.default.hostapi
+
+            self.hostapi_devices = [
+                (idx, d) for idx, d in enumerate(all_devices) if d['hostapi'] == default_api
+            ]
+
+            in_devs = [f"[{idx}] {d['name']}" for idx, d in self.hostapi_devices if d['max_input_channels'] > 0]
+            out_devs = [f"[{idx}] {d['name']}" for idx, d in self.hostapi_devices if d['max_output_channels'] > 0]
 
             self.cb_in['values'] = in_devs
             self.cb_out['values'] = out_devs
@@ -132,6 +145,26 @@ class VoiceChangerApp:
             else:
                 messagebox.showerror("Hata", f"Model yükleme hatası: {msg}")
 
+    def in_callback(self, indata, frames, time, status):
+        """Giriş cihazından sesi alıp işleme kuyruğuna atar"""
+        if status:
+            print(f"Giriş Durumu: {status}", file=sys.stderr)
+        processed = self.engine.process_frame(indata)
+        try:
+            self.audio_queue.put_nowait(processed)
+        except queue.Full:
+            pass
+
+    def out_callback(self, outdata, frames, time, status):
+        """Kuyruktan işlenmiş sesi alıp çıkış cihazına basar"""
+        if status:
+            print(f"Çıkış Durumu: {status}", file=sys.stderr)
+        try:
+            data = self.audio_queue.get_nowait()
+            outdata[:] = data
+        except queue.Empty:
+            outdata.fill(0)
+
     def toggle_audio(self):
         if not self.is_running:
             if not self.engine.is_ready:
@@ -139,40 +172,32 @@ class VoiceChangerApp:
                 return
 
             try:
-                # Seçili cihaz isimlerinden ID'leri bul
-                in_name = self.cb_in.get()
-                out_name = self.cb_out.get()
+                # String içinden ID çıkar
+                in_idx = int(self.cb_in.get().split(']')[0].replace('[', ''))
+                out_idx = int(self.cb_out.get().split(']')[0].replace('[', ''))
 
-                devices = sd.query_devices()
-                in_idx = next(i for i, d in enumerate(devices) if d['name'] == in_name and d['max_input_channels'] > 0)
-                out_idx = next(i for i, d in enumerate(devices) if d['name'] == out_name and d['max_output_channels'] > 0)
+                samplerate = 44100
+                blocksize = 2048
 
-                in_info = sd.query_devices(in_idx)
-                out_info = sd.query_devices(out_idx)
-
-                # Her iki cihazın da desteklediği güvenli varsayılan değerleri ayarla
-                in_ch = min(1, in_info['max_input_channels'])
-                out_ch = min(1, out_info['max_output_channels'])
-                samplerate = int(in_info['default_samplerate'])
-
-                # Ayrı işleme döngüsü (Buffer uyumsuzluğunu önler)
-                def callback(indata, outdata, frames, time, status):
-                    processed = self.engine.process_frame(indata)
-                    if out_ch > in_ch:
-                        outdata[:] = np.repeat(processed, out_ch, axis=1)
-                    elif out_ch < in_ch:
-                        outdata[:] = processed[:, :out_ch]
-                    else:
-                        outdata[:] = processed
-
-                self.input_stream = sd.Stream(
-                    device=(in_idx, out_idx),
-                    channels=(in_ch, out_ch),
+                # Giriş ve Çıkışı ayrı streamler halinde aç
+                self.input_stream = sd.InputStream(
+                    device=in_idx,
+                    channels=1,
                     samplerate=samplerate,
-                    callback=callback,
-                    blocksize=1024
+                    callback=self.in_callback,
+                    blocksize=blocksize
                 )
+
+                self.output_stream = sd.OutputStream(
+                    device=out_idx,
+                    channels=1,
+                    samplerate=samplerate,
+                    callback=self.out_callback,
+                    blocksize=blocksize
+                )
+
                 self.input_stream.start()
+                self.output_stream.start()
 
                 self.is_running = True
                 self.btn_toggle.config(text="SESİ DURDUR", bg="#f44336")
@@ -183,6 +208,16 @@ class VoiceChangerApp:
             if self.input_stream:
                 self.input_stream.stop()
                 self.input_stream.close()
+            if self.output_stream:
+                self.output_stream.stop()
+                self.output_stream.close()
+
+            # Kuyruğu temizle
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                except queue.Empty:
+                    break
 
             self.is_running = False
             self.btn_toggle.config(text="SESİ BAŞLAT", bg="#4CAF50")
@@ -193,4 +228,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = VoiceChangerApp(root)
     root.mainloop()
-                                                                                                  
+    
