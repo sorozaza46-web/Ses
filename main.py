@@ -12,14 +12,12 @@ import torch
 class SafeRVCInference:
     """Yapay zeka çıkarım ve CUDA ses işleme katmanı"""
     def __init__(self):
-        # NVIDIA GPU mevcutsa CUDA'ya geç, yoksa CPU kullan
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.is_ready = False
         self.model = None
 
     def load_model(self, pth_path):
         try:
-            # Model dosyasını belirlenen cihaza (GPU/CPU) aktar
             cpt = torch.load(pth_path, map_location=self.device)
             self.model = cpt
             self.is_ready = True
@@ -33,7 +31,6 @@ class SafeRVCInference:
         if not self.is_ready:
             return input_frame
         try:
-            # GPU bellek sızıntılarını ve gecikmeyi önleyen blok
             with torch.no_grad():
                 tensor_data = torch.from_numpy(input_frame).float().to(self.device)
                 processed = torch.tanh(tensor_data)
@@ -51,11 +48,11 @@ class VoiceChangerApp:
 
         self.engine = SafeRVCInference()
         self.is_running = False
-        self.stream = None
+        self.input_stream = None
+        self.output_stream = None
 
         self.model_path = tk.StringVar()
         
-        # HuBERT kontrolünü arka planda güvenli çalıştır
         threading.Thread(target=self.download_hubert_if_missing, daemon=True).start()
 
         self.setup_ui()
@@ -65,7 +62,6 @@ class VoiceChangerApp:
         hubert_path = "hubert_base.pt"
         if not os.path.exists(hubert_path):
             print("HuBERT bulunamadı. Üyelik istemeyen doğrudan bağlantıdan indirme başlatılıyor...")
-            # Oturum/Hesap gerektirmeyen doğrudan indirme adresi
             url = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt?download=true"
             try:
                 headers = {'User-Agent': 'Mozilla/5.0'}
@@ -81,7 +77,6 @@ class VoiceChangerApp:
     def setup_ui(self):
         tk.Label(self.root, text="RVC Canlı Ses Dönüştürücü", font=('Segoe UI', 12, 'bold')).pack(pady=10)
 
-        # Cihaz Seçim Grubu
         frame_dev = tk.LabelFrame(self.root, text=" Ses Cihazları ", font=('Segoe UI', 9, 'bold'))
         frame_dev.pack(fill="x", padx=15, pady=5)
 
@@ -93,18 +88,15 @@ class VoiceChangerApp:
         self.cb_out = ttk.Combobox(frame_dev, state="readonly")
         self.cb_out.pack(fill="x", padx=5, pady=(0, 5))
 
-        # Model Seçim Grubu
         frame_model = tk.LabelFrame(self.root, text=" Model (.pth) ", font=('Segoe UI', 9, 'bold'))
         frame_model.pack(fill="x", padx=15, pady=5)
 
         tk.Entry(frame_model, textvariable=self.model_path, state="readonly").pack(side="left", fill="x", expand=True, padx=5, pady=5)
         tk.Button(frame_model, text="Gözat...", command=self.select_pth).pack(side="right", padx=5, pady=5)
 
-        # Durum Etiketi
         self.lbl_status = tk.Label(self.root, text="Durum: Kapalı 🔴", font=('Segoe UI', 10, 'bold'), fg="red")
         self.lbl_status.pack(pady=15)
 
-        # Başlat/Durdur Düğmesi
         self.btn_toggle = tk.Button(
             self.root, 
             text="SESİ BAŞLAT", 
@@ -140,9 +132,6 @@ class VoiceChangerApp:
             else:
                 messagebox.showerror("Hata", f"Model yükleme hatası: {msg}")
 
-    def audio_callback(self, indata, outdata, frames, time_info, status):
-        outdata[:] = self.engine.process_frame(indata)
-
     def toggle_audio(self):
         if not self.is_running:
             if not self.engine.is_ready:
@@ -150,20 +139,40 @@ class VoiceChangerApp:
                 return
 
             try:
-                in_idx = self.cb_in.current()
-                out_idx = self.cb_out.current()
+                # Seçili cihaz isimlerinden ID'leri bul
+                in_name = self.cb_in.get()
+                out_name = self.cb_out.get()
 
-                # Cihazın kanal desteğini dinamik sorgula (Mono/Stereo çakışmasını önler)
-                in_dev_info = sd.query_devices(in_idx, 'input')
-                in_channels = min(1, in_dev_info['max_input_channels'])
+                devices = sd.query_devices()
+                in_idx = next(i for i, d in enumerate(devices) if d['name'] == in_name and d['max_input_channels'] > 0)
+                out_idx = next(i for i, d in enumerate(devices) if d['name'] == out_name and d['max_output_channels'] > 0)
 
-                self.stream = sd.Stream(
+                in_info = sd.query_devices(in_idx)
+                out_info = sd.query_devices(out_idx)
+
+                # Her iki cihazın da desteklediği güvenli varsayılan değerleri ayarla
+                in_ch = min(1, in_info['max_input_channels'])
+                out_ch = min(1, out_info['max_output_channels'])
+                samplerate = int(in_info['default_samplerate'])
+
+                # Ayrı işleme döngüsü (Buffer uyumsuzluğunu önler)
+                def callback(indata, outdata, frames, time, status):
+                    processed = self.engine.process_frame(indata)
+                    if out_ch > in_ch:
+                        outdata[:] = np.repeat(processed, out_ch, axis=1)
+                    elif out_ch < in_ch:
+                        outdata[:] = processed[:, :out_ch]
+                    else:
+                        outdata[:] = processed
+
+                self.input_stream = sd.Stream(
                     device=(in_idx, out_idx),
-                    channels=in_channels,
-                    samplerate=44100,
-                    callback=self.audio_callback
+                    channels=(in_ch, out_ch),
+                    samplerate=samplerate,
+                    callback=callback,
+                    blocksize=1024
                 )
-                self.stream.start()
+                self.input_stream.start()
 
                 self.is_running = True
                 self.btn_toggle.config(text="SESİ DURDUR", bg="#f44336")
@@ -171,9 +180,9 @@ class VoiceChangerApp:
             except Exception as e:
                 messagebox.showerror("Hata", f"Akış başlatılamadı: {e}")
         else:
-            if self.stream:
-                self.stream.stop()
-                self.stream.close()
+            if self.input_stream:
+                self.input_stream.stop()
+                self.input_stream.close()
 
             self.is_running = False
             self.btn_toggle.config(text="SESİ BAŞLAT", bg="#4CAF50")
@@ -184,4 +193,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = VoiceChangerApp(root)
     root.mainloop()
-    
+                                                                                                  
