@@ -1,0 +1,30 @@
+--index-url https://download.pytorch.org/whl/cu118
+--extra-index-url https://pypi.org/simple
+torch==2.1.1+cu118
+torchaudio==2.1.1+cu118
+
+# rvc-python -> fairseq zincirini, rvc-python'ın kendisi çözemediği
+# için burada elle sabitliyoruz.
+#
+# ÖNEMLİ: fairseq==0.12.2 PyPI'da SADECE kaynak kod (.tar.gz) olarak
+# yayınlanmıştır; Windows için resmi bir .whl yoktur. pip bu paketi
+# derlemeye çalışır (Cython + MSVC gerektirir) ve bu derleme
+# GitHub Actions'ın windows-latest runner'ında çoğu zaman ya çok
+# yavaş ya da sessizce eksik/bozuk bir modül üretiyor -> rvc_python
+# import edilirken "bulunamadı" hatasına yol açıyor.
+# Bunun yerine topluluğun derleyip yayınladığı hazır Windows
+# (cp310, win_amd64) wheel'i doğrudan indiriyoruz; build.yml'deki
+# python-version ile (3.10) eşleşmesi gerekir, değiştirirseniz bu
+# satırı da güncelleyin (cp39/cp311 vs.).
+omegaconf==2.0.6
+hydra-core==1.0.7
+antlr4-python3-runtime==4.8
+fairseq @ https://github.com/gdiaz384/fairseq/releases/download/v0.12.2.2024Feb07/fairseq-0.12.2-cp310-cp310-win_amd64.whl ; sys_platform == "win32"
+fairseq==0.12.2 ; sys_platform != "win32"
+
+rvc-python==0.1.5
+sounddevice==0.4.7
+soundfile==0.12.1
+numpy==1.23.5
+requests==2.32.3
+pyinstaller==6.10.0
