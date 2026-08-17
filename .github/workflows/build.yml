@@ -17,7 +17,12 @@ jobs:
 
       - name: Bağımlılıkları Yükle
         run: |
-          python -m pip install --upgrade pip
+          # NOT: pip 24.1+ artık PEP 440'a uymayan sürüm belirteçlerini
+          # (ör. omegaconf==2.0.6'nın "PyYAML>=5.1.*" metadata'sı) sert
+          # hata olarak reddediyor. rvc-python -> fairseq zinciri bu
+          # omegaconf sürümünü sabit istediği için, paketi değil,
+          # pip'i eski (uyumlu) sürüme sabitliyoruz.
+          python -m pip install "pip<24.1"
           pip install -r requirements.txt
 
       - name: Standalone EXE Derle
