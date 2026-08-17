@@ -1,0 +1,40 @@
+name: Build GPU-Enabled RVC EXE
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Repoyu Çek
+        uses: actions/checkout@v4
+
+      - name: Python Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Bağımlılıkları Yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Standalone EXE Derle
+        # --onefile yerine --onedir kullanılıyor: torch + CUDA DLL'leri
+        # birkaç GB olduğundan tek dosyaya paketlemek hem derlemeyi hem de
+        # her açılışta geçici klasöre açma süresini ciddi şekilde uzatır.
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --name="RVC_VoiceChanger" ^
+            --collect-all torch ^
+            --collect-all torchaudio ^
+            --collect-all rvc_python ^
+            --collect-all sounddevice ^
+            --collect-all soundfile ^
+            main.py
+
+      - name: EXE Klasörünü Yayınla (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: RVC_VoiceChanger_GPU
+          path: dist/RVC_VoiceChanger/
