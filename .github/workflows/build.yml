@@ -26,17 +26,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Standalone EXE Derle
-        # --onefile yerine --onedir kullanılıyor: torch + CUDA DLL'leri
-        # birkaç GB olduğundan tek dosyaya paketlemek hem derlemeyi hem de
-        # her açılışta geçici klasöre açma süresini ciddi şekilde uzatır.
-        run: |
-          pyinstaller --noconfirm --onedir --windowed --name="RVC_VoiceChanger" ^
-            --collect-all torch ^
-            --collect-all torchaudio ^
-            --collect-all rvc_python ^
-            --collect-all sounddevice ^
-            --collect-all soundfile ^
-            main.py
+        # NOT: windows-latest runner'da run: adımları varsayılan olarak
+        # PowerShell ile çalışır. "^" satır devamı karakteri cmd.exe'ye
+        # özgüdür; PowerShell'de "--" ile başlayan bir satır operatör
+        # sanılıp hataya yol açar. Bu yüzden komut, kabuk-bağımsız
+        # olacak şekilde tek satırda yazıldı.
+        run: pyinstaller --noconfirm --onedir --windowed --name="RVC_VoiceChanger" --collect-all torch --collect-all torchaudio --collect-all rvc_python --collect-all sounddevice --collect-all soundfile main.py
 
       - name: EXE Klasörünü Yayınla (Artifact)
         uses: actions/upload-artifact@v4
