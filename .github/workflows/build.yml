@@ -25,13 +25,23 @@ jobs:
           python -m pip install "pip<24.1"
           pip install -r requirements.txt
 
+      - name: rvc_python İçe Aktarma Kontrolü
+        # NOT: Kurulum "başarılı" görünse bile fairseq zincirinde bir
+        # şey eksik/bozuksa import burada hemen patlar ve build boşuna
+        # ilerlemez; hata mesajı EXE içinde saklı kalmaz.
+        run: python -c "from rvc_python.infer import RVCInference; print('rvc_python OK')"
+
       - name: Standalone EXE Derle
         # NOT: windows-latest runner'da run: adımları varsayılan olarak
         # PowerShell ile çalışır. "^" satır devamı karakteri cmd.exe'ye
         # özgüdür; PowerShell'de "--" ile başlayan bir satır operatör
         # sanılıp hataya yol açar. Bu yüzden komut, kabuk-bağımsız
         # olacak şekilde tek satırda yazıldı.
-        run: pyinstaller --noconfirm --onedir --windowed --name="RVC_VoiceChanger" --collect-all torch --collect-all torchaudio --collect-all rvc_python --collect-all sounddevice --collect-all soundfile main.py
+        # NOT: --runtime-hook, main.py çalışmaya başlamadan önce
+        # pyi_rth_site_builtins.py'yi çalıştırır; bu, frozen ortamda
+        # eksik olan help/copyright/credits/license/exit/quit
+        # builtin'lerini geri ekler (bkz. dosyanın içindeki açıklama).
+        run: pyinstaller --noconfirm --onedir --windowed --name="RVC_VoiceChanger" --runtime-hook=pyi_rth_site_builtins.py --collect-all torch --collect-all torchaudio --collect-all rvc_python --collect-all fairseq --collect-all hydra --collect-all hydra_core --collect-all omegaconf --collect-all sounddevice --collect-all soundfile main.py
 
       - name: EXE Klasörünü Yayınla (Artifact)
         uses: actions/upload-artifact@v4
